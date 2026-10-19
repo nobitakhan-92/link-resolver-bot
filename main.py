@@ -2,7 +2,7 @@ import asyncio
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from resolver import resolve_link
+from resolver import resolve_url as resolve_link
 
 app = FastAPI(
     title="Link Resolver API",
