@@ -11,7 +11,7 @@ from aiogram.types import (
 )
 from aiogram.exceptions import TelegramBadRequest
 
-from resolver import resolve_link
+from resolver import resolve_url as resolve_link
 
 TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 
