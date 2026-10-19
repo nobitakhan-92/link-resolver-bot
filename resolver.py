@@ -6,16 +6,18 @@ from urllib.parse import urljoin, urlsplit
 import dns.resolver
 import httpx
 
-MAX_REDIRECTS = 8
-TIMEOUT = 10
+MAX_REDIRECTS = 10
+TIMEOUT = 12
+
 HEADERS = {
-    "User-Agent": "LinkResolver/1.0",
-    "Accept": "text/html,*/*;q=0.8",
+    "User-Agent": "Mozilla/5.0 (compatible; LinkResolver/1.0)",
+    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
 }
+
+REDIRECT_CODES = {301, 302, 303, 307, 308}
 
 
 def validate_url(url: str) -> str:
-    """Allow public HTTP(S) URLs only."""
     try:
         p = urlsplit(url.strip())
 
@@ -32,12 +34,7 @@ def validate_url(url: str) -> str:
 
         try:
             ip = ipaddress.ip_address(host)
-            if not ip.is_global:
-                raise ValueError("Private destinations are not allowed.")
-        except ValueError as exc:
-            if str(exc) == "Private destinations are not allowed.":
-                raise
-            # Not an IP literal: resolve the hostname below.
+        except ValueError:
             try:
                 answers = dns.resolver.resolve(host, "A", lifetime=3)
                 addresses = [str(a) for a in answers]
@@ -55,15 +52,17 @@ def validate_url(url: str) -> str:
                         )
                     ]
                 except OSError:
-                    raise ValueError("The hostname could not be resolved.")
+                    raise ValueError("Hostname could not be resolved.")
 
             if not addresses or any(
                 not ipaddress.ip_address(a).is_global for a in addresses
             ):
                 raise ValueError("Private destinations are not allowed.")
+        else:
+            if not ip.is_global:
+                raise ValueError("Private destinations are not allowed.")
 
-        port = p.port
-        if port is not None and port not in (80, 443):
+        if p.port is not None and p.port not in (80, 443):
             raise ValueError("Only standard HTTP(S) ports are supported.")
 
         return p._replace(fragment="").geturl()
@@ -73,7 +72,13 @@ def validate_url(url: str) -> str:
 
 
 async def resolve_link(url: str) -> dict:
-    current = validate_url(url)
+    try:
+        original = validate_url(url)
+    except ValueError as exc:
+        return {"ok": False, "status": "invalid", "message": str(exc)}
+
+    current = original
+    history = []
 
     async with httpx.AsyncClient(
         follow_redirects=False,
@@ -82,55 +87,106 @@ async def resolve_link(url: str) -> dict:
         headers=HEADERS,
     ) as client:
         for hop in range(MAX_REDIRECTS + 1):
-            # Revalidate every hop to reduce redirect-based SSRF risks.
-            current = validate_url(current)
-
             try:
-                async with client.stream("GET", current) as response:
-                    if response.status_code not in (
-                        301, 302, 303, 307, 308
-                    ):
-                        return {
-                            "ok": True,
-                            "original_url": url,
-                            "destination_url": current,
-                            "redirects": hop,
-                            "status_code": response.status_code,
-                            "message": (
-                                "Redirect chain resolved."
-                                if hop else
-                                "No HTTP redirect detected."
-                            ),
-                        }
+                current = validate_url(current)
 
-                    location = response.headers.get("location")
-                    if not location:
+                async with client.stream("GET", current) as response:
+                    code = response.status_code
+                    history.append({
+                        "url": current,
+                        "status_code": code,
+                    })
+
+                    if code in REDIRECT_CODES:
+                        location = response.headers.get("location")
+
+                        if not location:
+                            return {
+                                "ok": False,
+                                "status": "unresolved",
+                                "message": "Redirect has no destination.",
+                                "history": history,
+                            }
+
+                        if hop == MAX_REDIRECTS:
+                            break
+
+                        current = urljoin(current, location)
+                        continue
+
+                    if code in (401, 403, 429):
                         return {
                             "ok": False,
-                            "message": "Redirect has no destination.",
+                            "status": "blocked",
+                            "message": f"Server returned HTTP {code}.",
+                            "destination_url": current,
+                            "redirects": hop,
+                            "history": history,
                         }
 
-                    current = urljoin(current, location)
+                    if code >= 400:
+                        return {
+                            "ok": False,
+                            "status": "http_error",
+                            "message": f"HTTP error {code}.",
+                            "destination_url": current,
+                            "redirects": hop,
+                            "history": history,
+                        }
+
+                    if current == original:
+                        return {
+                            "ok": False,
+                            "status": "unresolved",
+                            "message": (
+                                "No destination found. The page may require "
+                                "JavaScript, verification, or a browser step."
+                            ),
+                            "destination_url": current,
+                            "redirects": hop,
+                            "history": history,
+                        }
+
+                    return {
+                        "ok": True,
+                        "status": "resolved",
+                        "message": "Destination URL found.",
+                        "original_url": original,
+                        "destination_url": current,
+                        "redirects": hop,
+                        "status_code": code,
+                        "history": history,
+                    }
 
             except httpx.TimeoutException:
                 return {
                     "ok": False,
+                    "status": "timeout",
                     "message": "The website took too long to respond.",
+                    "history": history,
                 }
             except httpx.HTTPError:
                 return {
                     "ok": False,
+                    "status": "network_error",
                     "message": "Could not access this link.",
+                    "history": history,
                 }
             except ValueError as exc:
-                return {"ok": False, "message": str(exc)}
+                return {
+                    "ok": False,
+                    "status": "invalid_redirect",
+                    "message": str(exc),
+                    "history": history,
+                }
 
     return {
         "ok": False,
+        "status": "too_many_redirects",
         "message": "Too many redirects.",
+        "history": history,
     }
 
 
 def resolve_sync(url: str) -> dict:
-    """Optional helper for synchronous callers."""
-    return asyncio.run(resolve_link(url))    
+    return asyncio.run(resolve_link(url))
