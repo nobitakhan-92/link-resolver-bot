@@ -65,11 +65,11 @@ async def handle_link(message: Message):
     if not result.get("ok"):
         await status.edit_text(
             "❌ Couldn't resolve this link.\n\n"
-            + result.get("message", "Unknown error")
+            + result.get("error") or "No destination found."
         )
         return
 
-    destination = result["destination_url"]
+    destination = result["destination"]
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -84,10 +84,10 @@ async def handle_link(message: Message):
 
     text = (
         "✅ Link checked\n\n"
-        f"HTTP status: {result['status_code']}\n"
-        f"Redirects followed: {result['redirects']}\n\n"
+        f"HTTP status: {result.get('status')}\n"
+        f"Redirects followed: {result.get('redirects')}\n\n"
         f"Destination:\n{destination}\n\n"
-        f"Result: {result['message']}"
+        f"Result: {result.get('errors' or 'Destination detected'}"
     )
 
     # Telegram messages have a length limit.
