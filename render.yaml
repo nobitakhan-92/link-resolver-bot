@@ -1,11 +1,9 @@
 services:
   - type: web
     name: link-resolver
-    runtime: python
+    runtime: docker
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python run.py
     healthCheckPath: /health
     envVars:
       - key: BOT_TOKEN
-        sync: false 
+        sync: false
