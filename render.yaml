@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: link-resolver
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py
+    healthCheckPath: /health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false 
